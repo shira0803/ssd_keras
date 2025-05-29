@@ -27,12 +27,32 @@ class BBoxUtility(object):
         self.overlap_threshold = overlap_threshold
         self._nms_thresh = nms_thresh
         self._top_k = top_k
-        self.boxes = tf.placeholder(dtype='float32', shape=(None, 4))
-        self.scores = tf.placeholder(dtype='float32', shape=(None,))
-        self.nms = tf.image.non_max_suppression(self.boxes, self.scores,
-                                                self._top_k,
-                                                iou_threshold=self._nms_thresh)
-        self.sess = tf.Session(config=tf.ConfigProto(device_count={'GPU': 0}))
+
+    def apply_nms(self, boxes, scores):
+        """
+        Apply Non-Max Suppression on given boxes and scores.
+
+        Args:
+            boxes: Tensor of shape (num_boxes, 4)
+            scores: Tensor of shape (num_boxes,)
+
+        Returns:
+            selected_boxes: Tensor of shape (num_selected, 4)
+            selected_scores: Tensor of shape (num_selected,)
+        """
+        boxes = tf.convert_to_tensor(boxes, dtype=tf.float32)
+        scores = tf.convert_to_tensor(scores, dtype=tf.float32)
+
+        nms_indices = tf.image.non_max_suppression(
+            boxes,
+            scores,
+            max_output_size=self._top_k,
+            iou_threshold=self._nms_thresh
+        )
+
+        selected_boxes = tf.gather(boxes, nms_indices)
+        selected_scores = tf.gather(scores, nms_indices)
+        return selected_boxes, selected_scores
 
     @property
     def nms_thresh(self):
@@ -41,9 +61,6 @@ class BBoxUtility(object):
     @nms_thresh.setter
     def nms_thresh(self, value):
         self._nms_thresh = value
-        self.nms = tf.image.non_max_suppression(self.boxes, self.scores,
-                                                self._top_k,
-                                                iou_threshold=self._nms_thresh)
 
     @property
     def top_k(self):
@@ -52,9 +69,6 @@ class BBoxUtility(object):
     @top_k.setter
     def top_k(self, value):
         self._top_k = value
-        self.nms = tf.image.non_max_suppression(self.boxes, self.scores,
-                                                self._top_k,
-                                                iou_threshold=self._nms_thresh)
 
     def iou(self, box):
         """Compute intersection over union for the box with all priors.
@@ -215,18 +229,17 @@ class BBoxUtility(object):
                     continue
                 c_confs = mbox_conf[i, :, c]
                 c_confs_m = c_confs > confidence_threshold
-                if len(c_confs[c_confs_m]) > 0:
-                    boxes_to_process = decode_bbox[c_confs_m]
-                    confs_to_process = c_confs[c_confs_m]
-                    feed_dict = {self.boxes: boxes_to_process,
-                                 self.scores: confs_to_process}
-                    idx = self.sess.run(self.nms, feed_dict=feed_dict)
-                    good_boxes = boxes_to_process[idx]
-                    confs = confs_to_process[idx][:, None]
-                    labels = c * np.ones((len(idx), 1))
-                    c_pred = np.concatenate((labels, confs, good_boxes),
-                                            axis=1)
-                    results[-1].extend(c_pred)
+                if len(c_confs[c_confs_m]) == 0:
+                    continue
+                boxes_to_process = decode_bbox[c_confs_m]
+                confs_to_process = c_confs[c_confs_m]
+                selected_boxes, selected_scores = self.apply_nms(boxes_to_process, confs_to_process)
+                if selected_boxes.shape[0] == 0:
+                    continue
+                confs = tf.expand_dims(selected_scores, axis=-1).numpy()  # shape: (N, 1)
+                labels = c * np.ones((selected_boxes.shape[0], 1))
+                c_pred = np.concatenate((labels, confs, selected_boxes.numpy()), axis=1)
+                results[-1].extend(c_pred)
             if len(results[-1]) > 0:
                 results[-1] = np.array(results[-1])
                 argsort = np.argsort(results[-1][:, 1])[::-1]
