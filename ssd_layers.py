@@ -1,8 +1,8 @@
 """Some special pupropse layers for SSD."""
 
 import keras.backend as K
-from keras.engine.topology import InputSpec
-from keras.engine.topology import Layer
+from tensorflow.keras.layers import InputSpec
+from tensorflow.keras.layers import Layer
 import numpy as np
 import tensorflow as tf
 
@@ -29,7 +29,7 @@ class Normalize(Layer):
         Add possibility to have one scale for all features.
     """
     def __init__(self, scale, **kwargs):
-        if K.image_dim_ordering() == 'tf':
+        if K.image_data_format() == 'channels_last':
             self.axis = 3
         else:
             self.axis = 1
@@ -39,14 +39,25 @@ class Normalize(Layer):
     def build(self, input_shape):
         self.input_spec = [InputSpec(shape=input_shape)]
         shape = (input_shape[self.axis],)
-        init_gamma = self.scale * np.ones(shape)
-        self.gamma = K.variable(init_gamma, name='{}_gamma'.format(self.name))
-        self.trainable_weights = [self.gamma]
+        self.gamma = self.add_weight(
+            name='{}_gamma'.format(self.name),
+            shape=shape,
+            initializer=tf.keras.initializers.Constant(self.scale),
+            trainable=True
+        )
+
 
     def call(self, x, mask=None):
-        output = K.l2_normalize(x, self.axis)
+        output = tf.nn.l2_normalize(x, self.axis)
         output *= self.gamma
         return output
+
+    def get_config(self):
+        config = super().get_config().copy()
+        config.update({
+            'scale':self.scale,
+        })
+        return config    
 
 
 class PriorBox(Layer):
@@ -81,7 +92,7 @@ class PriorBox(Layer):
     """
     def __init__(self, img_size, min_size, max_size=None, aspect_ratios=None,
                  flip=True, variances=[0.1], clip=True, **kwargs):
-        if K.image_dim_ordering() == 'tf':
+        if K.image_data_format() == 'channels_last':
             self.waxis = 2
             self.haxis = 1
         else:
@@ -116,10 +127,7 @@ class PriorBox(Layer):
         return (input_shape[0], num_boxes, 8)
 
     def call(self, x, mask=None):
-        if hasattr(x, '_keras_shape'):
-            input_shape = x._keras_shape
-        elif hasattr(K, 'int_shape'):
-            input_shape = K.int_shape(x)
+        input_shape = x.shape
         layer_width = input_shape[self.waxis]
         layer_height = input_shape[self.haxis]
         img_width = self.img_size[0]
@@ -171,7 +179,7 @@ class PriorBox(Layer):
         else:
             raise Exception('Must provide one or four variances.')
         prior_boxes = np.concatenate((prior_boxes, variances), axis=1)
-        prior_boxes_tensor = K.expand_dims(K.variable(prior_boxes), 0)
+        prior_boxes_tensor = tf.expand_dims(prior_boxes,0)
         if K.backend() == 'tensorflow':
             pattern = [tf.shape(x)[0], 1, 1]
             prior_boxes_tensor = tf.tile(prior_boxes_tensor, pattern)
@@ -179,3 +187,16 @@ class PriorBox(Layer):
             #TODO
             pass
         return prior_boxes_tensor
+
+        def get_config(self):
+            config = super().get_config().copy()
+            config.update({
+                'img_size':self.img_size,
+                'min_size':self.min_size,
+                'max_size':self.max_size,
+                'aspect_ratios':self.aspect_ratios,
+                'variances':self.variances,
+                'clip':self.clip,
+
+            })
+            return config
